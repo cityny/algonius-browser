@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 
 const packageJson = JSON.parse(fs.readFileSync('../package.json', 'utf8'));
+// Ensure manifest `version` is numeric-only (major.minor.patch).
+// package.json may contain build metadata or labels (e.g. 1.0.1-optimized-n8n).
+// Extract the leading semver numeric part for the manifest.
+const manifestVersionMatch = String(packageJson.version || '').match(/^(\d+\.\d+\.\d+)/);
+const manifestVersion = manifestVersionMatch ? manifestVersionMatch[0] : '1.0.0';
 
 /**
  * After changing, please reload the extension at `chrome://extensions`
@@ -14,7 +19,7 @@ const manifest = {
    * https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Internationalization
    */
   name: '__MSG_extensionName__',
-  version: packageJson.version,
+  version: manifestVersion,
   description: '__MSG_extensionDescription__',
   host_permissions: ['<all_urls>'],
   permissions: ['scripting', 'tabs', 'activeTab', 'debugger', 'nativeMessaging'],
