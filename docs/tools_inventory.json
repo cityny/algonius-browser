@@ -1,0 +1,149 @@
+{
+  "tools": [
+    {
+      "name": "navigate_to",
+      "file": "mcp-host-go/pkg/tools/navigate_to.go",
+      "description": "Navigate to a specified URL",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "description": "URL to navigate to" },
+          "timeout": { "type": "string", "description": "'auto' or milliseconds as string", "default": "auto" },
+          "return_dom_state": { "type": "boolean", "default": false }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+      },
+      "notes": "RPC timeout: 'auto' maps to 30000ms; RPC call adds 5000ms buffer when executed. Returns DOM state when return_dom_state=true."
+    },
+    {
+      "name": "scroll_page",
+      "file": "mcp-host-go/pkg/tools/scroll_page.go",
+      "description": "Scroll the browser page",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["up","down","to_element","to_top","to_bottom"] },
+          "pixels": { "type": "number", "default": 600 },
+          "element_index": { "type": "number" },
+          "return_dom_state": { "type": "boolean", "default": false }
+        },
+        "required": ["action"],
+        "additionalProperties": false
+      },
+      "notes": "Use element_index (0-based) when action='to_element'. RPC timeout default ~10000ms."
+    },
+    {
+      "name": "get_dom_extra_elements",
+      "file": "mcp-host-go/pkg/tools/get_dom_extra_elements.go",
+      "description": "Paginated access to interactive elements in viewport",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "page": { "type": "integer", "minimum": 1, "default": 1 },
+          "pageSize": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+          "elementType": { "type": "string", "enum": ["button","input","link","select","textarea","all"], "default": "all" },
+          "startIndex": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+      },
+      "notes": "Returns markdown-formatted list. Designed to avoid flooding AI context; use pagination."
+    },
+    {
+      "name": "click_element",
+      "file": "mcp-host-go/pkg/tools/click_element.go",
+      "description": "Click interactive elements using element index from DOM state",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "element_index": { "type": "number", "description": "0-based index from DOM state interactive_elements", "minimum": 0 },
+          "wait_after": { "type": "number", "description": "milliseconds to wait after click", "minimum": 0, "maximum": 30000, "default": 1000 },
+          "return_dom_state": { "type": "boolean", "default": false }
+        },
+        "required": ["element_index"],
+        "additionalProperties": false
+      },
+      "notes": "Primary selector: element_index. RPC timeout ~15000ms. On failure returns error codes/messages (e.g. ELEMENT_NOT_CLICKABLE)."
+    },
+    {
+      "name": "type_value",
+      "file": "mcp-host-go/pkg/tools/type_value.go",
+      "description": "Set values on form inputs and simulate keyboard input",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "element_index": { "type": "number", "minimum": 0 },
+          "value": { "description": "string|number|boolean|array for multi-select; special key syntax like {Enter}" },
+          "timeout": { "type": "string", "default": "auto" },
+          "options": {
+            "type": "object",
+            "properties": {
+              "clear_first": { "type": "boolean", "default": true },
+              "submit": { "type": "boolean", "default": false },
+              "wait_after": { "type": "number", "default": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": ["element_index","value"],
+        "additionalProperties": false
+      },
+      "notes": "Supports keyboard-style inputs (auto-detect). 'auto' timeout uses intelligent calculation; RPC timeout may be large (up to minutes). Returns dom_changed flag when DOM mutated."
+    },
+    {
+      "name": "manage_tabs",
+      "file": "mcp-host-go/pkg/tools/manage_tabs.go",
+      "description": "Open, switch, and close browser tabs",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["switch","open","close"] },
+          "tab_id": { "type": "string" },
+          "url": { "type": "string" },
+          "background": { "type": "boolean", "default": false }
+        },
+        "required": ["action"],
+        "additionalProperties": false
+      },
+      "notes": "Use tab_id to target a tab. Opening can return new_tab_id in result. RPC timeouts vary (open uses 30000ms)."
+    }
+  ],
+  "extraction": {
+    "dom_state_resource": {
+      "file": "mcp-host-go/pkg/resources/dom_state.go",
+      "uri": "browser://dom/state",
+      "mime_type": "text/markdown",
+      "overview_limit": 20,
+      "notes": "Overview returns AI-friendly Markdown with metadata, first 20 interactive elements and a simplified DOM block (```html```). Use get_dom_extra_elements for pagination."
+    },
+    "readability": {
+      "file": "chrome-extension/src/background/dom/service.ts",
+      "function": "getReadabilityContent / parserReadability",
+      "notes": "Supports Read Mode via parserReadability() and getReadabilityContent(tabId) which returns structured readability content (title, excerpt, text, etc.)."
+    },
+    "selectors": {
+      "primary": "element_index (highlightIndex) from DOM state",
+      "secondary": "xpath (some tools accept xpath), enhanced CSS selectors via DOMElementNode.getEnhancedCssSelector()",
+      "notes": "The extension builds a DOM tree and maps highlightIndex->DOMElementNode; preferred approach is to use element_index for stability. Schemas in packages/schema-utils also include 'index' and optional 'xpath'."
+    }
+  },
+  "state_sessions": {
+    "cookies_local_storage": "Managed by browser context; no central cookie API in host code. If you log in within the same tab/session, the session persists while the tab/browser instance exists.",
+    "multiple_tabs": "Supported. Tools accept tab_id (string/integer depending on interface) and manage_tabs tool exists to control tabs. CurrentStateResource exposes tab info.",
+    "notes": "To persist sessions across n8n calls, call tools/actions that reuse the same tab_id or keep the browser host instance running."
+  },
+  "limits_timeouts_errors": {
+    "overview_limit": 20,
+    "get_dom_extra_elements_pageSize_max": 100,
+    "navigate_timeout_auto_ms": 30000,
+    "click_timeout_ms": 15000,
+    "type_value_timeouts_ms": "auto or up to 600000 validated in code",
+    "error_codes_examples": [
+      "ELEMENT_NOT_CLICKABLE",
+      "CLICK_FAILED",
+      "TYPE_VALUE_FAILED",
+      "RPC_ERROR",
+      "DOM_STATE_NOT_AVAILABLE"
+    ]
+  }
+}

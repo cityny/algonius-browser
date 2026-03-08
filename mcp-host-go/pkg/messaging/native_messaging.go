@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -25,6 +26,7 @@ type NativeMessaging struct {
 	rpcHandlers     map[string]types.RpcHandler
 	pendingRequests map[string]*pendingRequest
 	mutex           sync.Mutex
+	defaultRpcTimeoutMs int
 }
 
 // pendingRequest represents a pending RPC request
@@ -66,6 +68,17 @@ func NewNativeMessaging(config NativeMessagingConfig) (*NativeMessaging, error) 
 		messageHandlers: make(map[string]types.MessageHandler),
 		rpcHandlers:     make(map[string]types.RpcHandler),
 		pendingRequests: make(map[string]*pendingRequest),
+		defaultRpcTimeoutMs: 30000, // default 30s
+	}
+
+	// Allow configuring default RPC timeout (seconds) via environment variable MCP_RPC_TIMEOUT
+	if v := os.Getenv("MCP_RPC_TIMEOUT"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			nm.defaultRpcTimeoutMs = secs * 1000
+			nm.logger.Info("Configured MCP RPC timeout from env", zap.Int("timeout_ms", nm.defaultRpcTimeoutMs))
+		} else {
+			nm.logger.Warn("Invalid MCP_RPC_TIMEOUT value, using default", zap.String("value", v))
+		}
 	}
 
 	nm.registerRpcResponseHandler()
@@ -78,7 +91,8 @@ func (nm *NativeMessaging) Start() error {
 	nm.logger.Info("Starting native messaging processing")
 
 	go func() {
-		buffer := make([]byte, 4096)
+		// Use a larger read buffer to better support large messages from the extension
+		buffer := make([]byte, 65536) // 64KB
 		for {
 			n, err := nm.stdin.Read(buffer)
 			if err != nil {
@@ -224,7 +238,8 @@ func (nm *NativeMessaging) RpcRequest(request types.RpcRequest, options types.Rp
 
 	nm.logger.Info("Sending RPC request", zap.String("method", request.Method), zap.String("id", id))
 
-	timeout := 5000 // Default 5 seconds
+	// Determine timeout in milliseconds. Priority: options.Timeout > env/default
+	timeout := nm.defaultRpcTimeoutMs
 	if options.Timeout > 0 {
 		timeout = options.Timeout
 	}

@@ -35,7 +35,7 @@ export class ScrollPageHandler {
       return null;
     }
 
-    return await page._puppeteerPage.evaluate(() => {
+    return await page.safeEvaluate(page._puppeteerPage, () => {
       // Function to check if an element is scrollable
       function isScrollable(element: Element): boolean {
         const style = window.getComputedStyle(element);
@@ -139,7 +139,8 @@ export class ScrollPageHandler {
       throw new Error('Puppeteer page not available');
     }
 
-    return await page._puppeteerPage.evaluate(
+    return await page.safeEvaluate(
+      page._puppeteerPage,
       (containerData: any, scrollAction: string, scrollPixels?: number) => {
         // Find the container element again (we can't pass the actual element reference)
         let container: Element | null = null;
@@ -381,7 +382,7 @@ export class ScrollPageHandler {
     }
 
     // Scroll the element into view
-    await elementHandle.evaluate((el: Element) => {
+    await page.safeEvaluate(elementHandle, (el: Element) => {
       el.scrollIntoView({
         behavior: 'smooth',
         block: 'center',
@@ -408,7 +409,7 @@ export class ScrollPageHandler {
     } else {
       // Fall back to window scrolling
       if (page._puppeteerPage) {
-        await page._puppeteerPage.evaluate(() => {
+        await page.safeEvaluate(page._puppeteerPage, () => {
           window.scrollTo({
             top: 0,
             left: 0,
@@ -437,7 +438,7 @@ export class ScrollPageHandler {
     } else {
       // Fall back to window scrolling
       if (page._puppeteerPage) {
-        await page._puppeteerPage.evaluate(() => {
+        await page.safeEvaluate(page._puppeteerPage, () => {
           window.scrollTo({
             top: document.body.scrollHeight,
             left: 0,

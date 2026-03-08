@@ -278,8 +278,16 @@ export default class Page {
         logger.debug('content.elementTree: not found');
       }
 
-      // Take screenshot if needed
-      const screenshot = useVision ? await this.takeScreenshot() : null;
+      // Take screenshot if needed (degrade on failure)
+      let screenshot = null;
+      if (useVision) {
+        try {
+          screenshot = await this.takeScreenshot();
+        } catch (err) {
+          logger.warning('takeScreenshot failed, continuing without screenshot:', err);
+          screenshot = null;
+        }
+      }
       const [pixelsAbove, pixelsBelow] = await this.getScrollInfo();
 
       // update the state
@@ -305,7 +313,7 @@ export default class Page {
 
     try {
       // First disable animations/transitions
-      await this._puppeteerPage.evaluate(() => {
+      await this.safeEvaluate(this._puppeteerPage, () => {
         const styleId = 'puppeteer-disable-animations';
         if (!document.getElementById(styleId)) {
           const style = document.createElement('style');
@@ -329,17 +337,48 @@ export default class Page {
       });
 
       // Clean up the style element
-      await this._puppeteerPage.evaluate(() => {
-        const style = document.getElementById('puppeteer-disable-animations');
-        if (style) {
-          style.remove();
-        }
-      });
+      try {
+        await this.safeEvaluate(this._puppeteerPage, () => {
+          const style = document.getElementById('puppeteer-disable-animations');
+          if (style) {
+            style.remove();
+          }
+        });
+      } catch (cleanupErr) {
+        logger.debug('Failed to clean up screenshot styles:', cleanupErr);
+      }
 
       return screenshot as string;
     } catch (error) {
-      logger.error('Failed to take screenshot:', error);
-      throw error;
+      logger.warning('Failed to take screenshot, returning null:', error);
+      return null;
+    }
+  }
+
+  // Helper to serialize arguments passed to evaluate so functions are not sent across the native messaging boundary
+  private serializeArgForEvaluate(arg: any): any {
+    if (typeof arg === 'function') return arg.toString();
+    if (arg === undefined) return null;
+    try {
+      JSON.stringify(arg);
+      return arg;
+    } catch (_e) {
+      return String(arg);
+    }
+  }
+
+  // Safe wrapper for evaluate calls: serializes args and handles errors consistently
+  public async safeEvaluate(target: any, fnOrString: any, ...args: any[]): Promise<any> {
+    if (!target || typeof target.evaluate !== 'function') {
+      throw new Error('Invalid evaluate target');
+    }
+
+    const safeArgs = args.map(a => this.serializeArgForEvaluate(a));
+    try {
+      return await target.evaluate(fnOrString, ...safeArgs);
+    } catch (err) {
+      logger.warning('safeEvaluate failed:', err);
+      throw err;
     }
   }
 

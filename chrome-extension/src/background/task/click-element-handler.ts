@@ -179,7 +179,7 @@ export class ClickElementHandler {
     }
 
     // Check if element is visible and clickable
-    const isVisible = await elementHandle.evaluate((el: Element) => {
+    const isVisible = await page.safeEvaluate(elementHandle, (el: Element) => {
       const rect = el.getBoundingClientRect();
       const style = window.getComputedStyle(el);
       return (
@@ -196,7 +196,7 @@ export class ClickElementHandler {
     }
 
     // Scroll element into view if needed
-    await elementHandle.evaluate((el: Element) => {
+    await page.safeEvaluate(elementHandle, (el: Element) => {
       el.scrollIntoView({
         behavior: 'instant',
         block: 'center',
@@ -215,7 +215,7 @@ export class ClickElementHandler {
       // If normal click fails, try JavaScript click as fallback
       this.logger.error(`Normal click failed for element ${elementIndex}, trying JavaScript click`, clickError);
 
-      await elementHandle.evaluate((el: HTMLElement) => {
+        await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
         el.click();
       });
 

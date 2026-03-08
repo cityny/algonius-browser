@@ -1164,6 +1164,35 @@ window.buildDomTree = (
       children: [],
     };
 
+    // Capture minimal visual metadata to allow slim serialization later
+    try {
+      const rect = getCachedBoundingRect(node);
+      nodeData.rect = rect ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height } : null;
+    } catch (e) {
+      nodeData.rect = null;
+    }
+
+    try {
+      const rawText = (node.innerText || '').trim();
+      nodeData.text = rawText ? rawText.substring(0, 500) : '';
+    } catch (e) {
+      nodeData.text = '';
+    }
+
+    try {
+      const tag = node.tagName.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+        // capture value where applicable
+        try {
+          nodeData.value = node.value == null ? '' : String(node.value).substring(0, 500);
+        } catch (e) {
+          nodeData.value = '';
+        }
+      }
+    } catch (e) {
+      /* ignore */
+    }
+
     // Get attributes for interactive elements or potential text containers
     if (
       isInteractiveCandidate(node) ||
@@ -1266,6 +1295,67 @@ window.buildDomTree = (
 
   // Clear the cache before starting
   DOM_CACHE.clearCache();
+
+  // --- Slim post-processing: prune non-interactive containers and strip attributes ---
+  try {
+    const keepCache = {};
+
+    function shouldKeepNode(nodeId) {
+      if (keepCache[nodeId] !== undefined) return keepCache[nodeId];
+      const node = DOM_HASH_MAP[nodeId];
+      if (!node) return (keepCache[nodeId] = false);
+
+      // Text nodes: keep only if parent is kept (handled by parent)
+      if (node.type === 'TEXT_NODE') {
+        return (keepCache[nodeId] = false);
+      }
+
+      // If node is explicitly interactive, keep it
+      if (node.isInteractive) return (keepCache[nodeId] = true);
+
+      // If node has accessibility attributes, keep it
+      const attrs = node.attributes || {};
+      if (attrs.role || attrs['aria-label'] || attrs.tabindex) return (keepCache[nodeId] = true);
+
+      // Recursively check children
+      const children = node.children || [];
+      for (const cid of children) {
+        if (shouldKeepNode(cid)) return (keepCache[nodeId] = true);
+      }
+
+      return (keepCache[nodeId] = false);
+    }
+
+    // Determine nodes to keep starting from root
+    shouldKeepNode(rootId);
+
+    // Now prune DOM_HASH_MAP in-place: remove non-kept nodes and trim attributes
+    for (const [nid, nd] of Object.entries(DOM_HASH_MAP)) {
+      const keep = !!keepCache[nid];
+      if (!keep) {
+        delete DOM_HASH_MAP[nid];
+        continue;
+      }
+
+      // Prune children list to only kept nodes
+      if (Array.isArray(nd.children) && nd.children.length > 0) {
+        nd.children = nd.children.filter(c => !!keepCache[c]);
+      }
+
+      // Reduce attributes to only id and class (keep role/aria/tabindex if present)
+      const orig = nd.attributes || {};
+      const reduced = {};
+      if (orig.id) reduced.id = orig.id;
+      if (orig.class) reduced.class = orig.class;
+      if (orig.role) reduced.role = orig.role;
+      if (orig['aria-label']) reduced['aria-label'] = orig['aria-label'];
+      if (orig.tabindex) reduced.tabindex = orig.tabindex;
+      nd.attributes = reduced;
+    }
+  } catch (e) {
+    // If pruning fails, fall back to sending full map
+    console.warn('Slim pruning failed, sending full DOM map:', e);
+  }
 
   // Only process metrics in debug mode
   if (debugMode && PERF_METRICS) {

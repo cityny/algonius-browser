@@ -1093,12 +1093,12 @@ export class TypeValueHandler {
 
     // Clear content if requested and element supports it
     if (options.clear_first) {
-      const canClear = await elementHandle.evaluate((el: HTMLElement) => {
-        return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable;
-      });
+        const canClear = await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
+          return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable;
+        });
 
       if (canClear) {
-        await elementHandle.evaluate((el: HTMLElement) => {
+        await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
           if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
             el.value = '';
           } else if (el.isContentEditable) {
@@ -1360,7 +1360,7 @@ export class TypeValueHandler {
     }
 
     // Check if element is visible and interactive
-    const isInteractable = await elementHandle.evaluate((el: HTMLElement) => {
+    const isInteractable = await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
       const rect = el.getBoundingClientRect();
       const style = window.getComputedStyle(el);
       return (
@@ -1379,7 +1379,7 @@ export class TypeValueHandler {
     }
 
     // Scroll element into view
-    await elementHandle.evaluate((el: Element) => {
+    await page.safeEvaluate(elementHandle, (el: Element) => {
       el.scrollIntoView({
         behavior: 'instant',
         block: 'center',
@@ -1417,7 +1417,7 @@ export class TypeValueHandler {
 
     // Clear existing content if requested
     if (options.clear_first) {
-      await elementHandle.evaluate((el: HTMLInputElement | HTMLTextAreaElement | HTMLElement) => {
+      await page.safeEvaluate(elementHandle, (el: HTMLInputElement | HTMLTextAreaElement | HTMLElement) => {
         if ('value' in el) {
           el.value = '';
         } else if ((el as HTMLElement).isContentEditable) {
@@ -1436,13 +1436,13 @@ export class TypeValueHandler {
     }
 
     // Trigger change event
-    await elementHandle.evaluate((el: HTMLElement) => {
+    await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
       el.dispatchEvent(new Event('change', { bubbles: true }));
     });
 
     // Simple verification: check if value was set successfully
     try {
-      const actualValue = await elementHandle.evaluate((el: HTMLInputElement | HTMLTextAreaElement) => {
+      const actualValue = await page.safeEvaluate(elementHandle, (el: HTMLInputElement | HTMLTextAreaElement) => {
         if ('value' in el) {
           return el.value;
         } else if ((el as HTMLElement).isContentEditable) {
@@ -1487,9 +1487,9 @@ export class TypeValueHandler {
 
         // Periodically trigger input event to maintain page responsiveness
         if (chunkIndex % INPUT_EVENT_INTERVAL === 0) {
-          await elementHandle.evaluate((el: HTMLElement) => {
+          await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
             el.dispatchEvent(new Event('input', { bubbles: true }));
-          });
+              });
         }
 
         // Adaptive delay between chunks based on chunk size and position
@@ -1534,7 +1534,7 @@ export class TypeValueHandler {
   private async handleSingleSelect(elementHandle: any, value: any): Promise<{ actualValue: string }> {
     const stringValue = String(value);
 
-    const result = await elementHandle.evaluate((select: HTMLSelectElement, optionText: string) => {
+    const result = await page.safeEvaluate(elementHandle, (select: HTMLSelectElement, optionText: string) => {
       const options = Array.from(select.options);
       const option = options.find(opt => opt.text.trim() === optionText || opt.value === optionText);
 
@@ -1570,7 +1570,7 @@ export class TypeValueHandler {
   private async handleMultiSelect(elementHandle: any, value: any): Promise<{ actualValue: string[] }> {
     const values = Array.isArray(value) ? value.map(String) : [String(value)];
 
-    const result = await elementHandle.evaluate((select: HTMLSelectElement, optionTexts: string[]) => {
+    const result = await page.safeEvaluate(elementHandle, (select: HTMLSelectElement, optionTexts: string[]) => {
       const options = Array.from(select.options);
       const selectedValues: string[] = [];
 
@@ -1614,7 +1614,8 @@ export class TypeValueHandler {
   private async handleToggle(elementHandle: any, value: any, elementType: string): Promise<{ actualValue: boolean }> {
     const shouldCheck = Boolean(value);
 
-    const result = await elementHandle.evaluate(
+    const result = await page.safeEvaluate(
+      elementHandle,
       (input: HTMLInputElement, targetState: boolean, type: string) => {
         const currentState = input.checked;
 
