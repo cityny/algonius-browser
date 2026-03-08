@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { StatusDisplay } from '@src/StatusDisplay';
 import { ControlPanel } from '@src/ControlPanel';
 import { useMcpHost } from '@extension/shared';
@@ -6,6 +6,34 @@ import packageJson from '../../../package.json';
 
 export const Popup: React.FC = () => {
   const { status, loading, error, refreshStatus, startMcpHost, stopMcpHost } = useMcpHost();
+  const [connectionAdvice, setConnectionAdvice] = useState<string | null>(null);
+
+  useEffect(() => {
+    const listener = (message: any) => {
+      if (message && message.type === 'mcpHostConnectionError') {
+        const advice = message.advice || (message.error && message.error.advice) || null;
+        if (advice) {
+          // show alert for immediate visibility
+          try {
+            // eslint-disable-next-line no-alert
+            alert(advice);
+          } catch (e) {
+            // ignore if alert is blocked
+          }
+          setConnectionAdvice(advice);
+        }
+      }
+    };
+
+    chrome.runtime.onMessage.addListener(listener);
+    return () => {
+      try {
+        chrome.runtime.onMessage.removeListener(listener as any);
+      } catch (e) {
+        // ignore
+      }
+    };
+  }, []);
 
   return (
     <div className="mx-auto max-w-md p-4">
@@ -13,6 +41,13 @@ export const Popup: React.FC = () => {
         <h1 className="text-xl font-bold text-gray-900 dark:text-white">MCP Host Control</h1>
         <p className="text-sm text-gray-600 dark:text-gray-400">Monitor and control the MCP Host process</p>
       </header>
+
+      {connectionAdvice && (
+        <div className="mb-4 rounded border border-red-400 bg-red-50 p-3 text-sm text-red-800">
+          <strong>Consejo de solución:</strong>
+          <div className="mt-1 whitespace-pre-wrap">{connectionAdvice}</div>
+        </div>
+      )}
 
       <StatusDisplay status={status} loading={loading} error={error} onRefresh={refreshStatus} />
 

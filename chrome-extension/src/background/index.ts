@@ -11,6 +11,7 @@ import {
 } from './task';
 import { ScrollPageHandler } from './task/scroll-page-handler';
 import { ClickElementHandler } from './task/click-element-handler';
+import { BrowsingDataHandler } from './task/browsing-data-handler';
 
 const logger = createLogger('background');
 
@@ -27,6 +28,7 @@ const scrollPageHandler = new ScrollPageHandler(browserContext);
 const clickElementHandler = new ClickElementHandler(browserContext);
 const manageTabsHandler = new ManageTabsHandler(browserContext);
 const typeValueHandler = new TypeValueHandler(browserContext);
+const browsingDataHandler = new BrowsingDataHandler();
 
 // Register RPC method handlers
 mcpHostManager.registerRpcMethod('navigate_to', navigateToHandler.handleNavigateTo.bind(navigateToHandler));
@@ -39,6 +41,7 @@ mcpHostManager.registerRpcMethod('scroll_page', scrollPageHandler.handleScrollPa
 mcpHostManager.registerRpcMethod('click_element', clickElementHandler.handleClickElement.bind(clickElementHandler));
 mcpHostManager.registerRpcMethod('manage_tabs', manageTabsHandler.handleManageTabs.bind(manageTabsHandler));
 mcpHostManager.registerRpcMethod('type_value', typeValueHandler.handleTypeValue.bind(typeValueHandler));
+mcpHostManager.registerRpcMethod('browsing_data', browsingDataHandler.handleBrowsingData.bind(browsingDataHandler));
 
 // Function to check if script is already injected
 async function isScriptInjected(tabId: number): Promise<boolean> {

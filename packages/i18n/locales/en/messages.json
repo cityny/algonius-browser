@@ -5,7 +5,7 @@
   },
   "extensionName": {
     "description": "Extension name",
-    "message": "Algonius Browser MCP"
+    "message": "Algonius Browser MCP (optimized for n8n)"
   },
   "toggleTheme": {
     "message": "Toggle theme"

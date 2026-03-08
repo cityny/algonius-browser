@@ -134,22 +134,45 @@ export class McpHostManager {
 
       // Critical: The onDisconnect event is where we need to check for connection errors
       // We'll create a local handler first that includes the Promise resolution
+      const hostName = 'ai.algonius.mcp.host';
+
       const disconnectHandler = () => {
         // Check for runtime error which indicates connection failure
         const lastError = chrome.runtime.lastError;
         if (lastError) {
-          const errorMessage = lastError.message;
-          console.error(`Native messaging connection failed: ${errorMessage}`);
+          const errorMessage = lastError.message || String(lastError);
+
+          // Minimal internal validation hints
+          const extensionId = chrome.runtime && chrome.runtime.id ? chrome.runtime.id : 'unknown';
+          const hostDefined = !!hostName;
+
+          // Detailed Spanish troubleshooting advice
+          const advice = `ERROR DE CONEXIÓN: ${errorMessage}. PASOS DE SOLUCIÓN: 1. Revisa el JSON en /etc/chromium/native-messaging-hosts/ (o la ruta equivalente) para el host '${hostName}'. 2. Verifica permisos de ejecución del binario referenciado en ese JSON. 3. Asegura que el Origin (allowed_origins) en el JSON incluya exactamente '${extensionId}'.`;
+
+          console.error(advice);
 
           // Clean up port reference
           this.port = null;
 
-          // Create a structured MCP error with appropriate error code
+          // Create a structured MCP error with additional diagnostic data
           const mcpError = createMcpError(
             McpErrorCode.HOST_NOT_FOUND,
             `Native messaging connection failed: ${errorMessage}`,
-            { originalError: lastError.message },
+            {
+              originalError: errorMessage,
+              hostName,
+              extensionId,
+              hostDefined,
+              advice,
+            },
           );
+
+          // Send detailed error to popup UI so user sees actionable message
+          try {
+            chrome.runtime.sendMessage({ type: 'mcpHostConnectionError', error: mcpError, advice });
+          } catch (sendErr) {
+            console.debug('Failed to send connection error message to runtime listeners:', sendErr);
+          }
 
           // Reject the promise with the structured error
           reject(mcpError);
