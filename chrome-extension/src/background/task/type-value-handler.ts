@@ -1093,9 +1093,9 @@ export class TypeValueHandler {
 
     // Clear content if requested and element supports it
     if (options.clear_first) {
-        const canClear = await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
-          return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable;
-        });
+      const canClear = await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
+        return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable;
+      });
 
       if (canClear) {
         await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
@@ -1489,7 +1489,7 @@ export class TypeValueHandler {
         if (chunkIndex % INPUT_EVENT_INTERVAL === 0) {
           await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
             el.dispatchEvent(new Event('input', { bubbles: true }));
-              });
+          });
         }
 
         // Adaptive delay between chunks based on chunk size and position
@@ -1534,32 +1534,36 @@ export class TypeValueHandler {
   private async handleSingleSelect(elementHandle: any, value: any): Promise<{ actualValue: string }> {
     const stringValue = String(value);
 
-    const result = await page.safeEvaluate(elementHandle, (select: HTMLSelectElement, optionText: string) => {
-      const options = Array.from(select.options);
-      const option = options.find(opt => opt.text.trim() === optionText || opt.value === optionText);
+    const result = await page.safeEvaluate(
+      elementHandle,
+      (select: HTMLSelectElement, optionText: string) => {
+        const options = Array.from(select.options);
+        const option = options.find(opt => opt.text.trim() === optionText || opt.value === optionText);
 
-      if (!option) {
-        const availableOptions = options
-          .slice(0, 5)
-          .map(o => o.text.trim())
-          .join('", "');
-        const totalCount = options.length;
-        const moreText = totalCount > 5 ? ` (and ${totalCount - 5} more)` : '';
+        if (!option) {
+          const availableOptions = options
+            .slice(0, 5)
+            .map(o => o.text.trim())
+            .join('", "');
+          const totalCount = options.length;
+          const moreText = totalCount > 5 ? ` (and ${totalCount - 5} more)` : '';
 
-        throw new Error(`Option "${optionText}" not found. Available options: "${availableOptions}"${moreText}`);
-      }
+          throw new Error(`Option "${optionText}" not found. Available options: "${availableOptions}"${moreText}`);
+        }
 
-      const previousValue = select.value;
-      select.value = option.value;
+        const previousValue = select.value;
+        select.value = option.value;
 
-      // Only dispatch events if value changed
-      if (previousValue !== option.value) {
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-        select.dispatchEvent(new Event('input', { bubbles: true }));
-      }
+        // Only dispatch events if value changed
+        if (previousValue !== option.value) {
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          select.dispatchEvent(new Event('input', { bubbles: true }));
+        }
 
-      return option.text.trim();
-    }, stringValue);
+        return option.text.trim();
+      },
+      stringValue,
+    );
 
     return { actualValue: result };
   }
@@ -1570,40 +1574,44 @@ export class TypeValueHandler {
   private async handleMultiSelect(elementHandle: any, value: any): Promise<{ actualValue: string[] }> {
     const values = Array.isArray(value) ? value.map(String) : [String(value)];
 
-    const result = await page.safeEvaluate(elementHandle, (select: HTMLSelectElement, optionTexts: string[]) => {
-      const options = Array.from(select.options);
-      const selectedValues: string[] = [];
+    const result = await page.safeEvaluate(
+      elementHandle,
+      (select: HTMLSelectElement, optionTexts: string[]) => {
+        const options = Array.from(select.options);
+        const selectedValues: string[] = [];
 
-      // Clear all selections first
-      options.forEach(option => {
-        option.selected = false;
-      });
+        // Clear all selections first
+        options.forEach(option => {
+          option.selected = false;
+        });
 
-      // Select matching options
-      for (const optionText of optionTexts) {
-        const option = options.find(opt => opt.text.trim() === optionText || opt.value === optionText);
-        if (option) {
-          option.selected = true;
-          selectedValues.push(option.text.trim());
+        // Select matching options
+        for (const optionText of optionTexts) {
+          const option = options.find(opt => opt.text.trim() === optionText || opt.value === optionText);
+          if (option) {
+            option.selected = true;
+            selectedValues.push(option.text.trim());
+          }
         }
-      }
 
-      if (selectedValues.length === 0) {
-        const availableOptions = options
-          .slice(0, 5)
-          .map(o => o.text.trim())
-          .join('", "');
-        const totalCount = options.length;
-        const moreText = totalCount > 5 ? ` (and ${totalCount - 5} more)` : '';
+        if (selectedValues.length === 0) {
+          const availableOptions = options
+            .slice(0, 5)
+            .map(o => o.text.trim())
+            .join('", "');
+          const totalCount = options.length;
+          const moreText = totalCount > 5 ? ` (and ${totalCount - 5} more)` : '';
 
-        throw new Error(`No matching options found. Available options: "${availableOptions}"${moreText}`);
-      }
+          throw new Error(`No matching options found. Available options: "${availableOptions}"${moreText}`);
+        }
 
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      select.dispatchEvent(new Event('input', { bubbles: true }));
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        select.dispatchEvent(new Event('input', { bubbles: true }));
 
-      return selectedValues;
-    }, values);
+        return selectedValues;
+      },
+      values,
+    );
 
     return { actualValue: result };
   }

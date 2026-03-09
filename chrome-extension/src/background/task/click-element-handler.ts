@@ -215,7 +215,7 @@ export class ClickElementHandler {
       // If normal click fails, try JavaScript click as fallback
       this.logger.error(`Normal click failed for element ${elementIndex}, trying JavaScript click`, clickError);
 
-        await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
+      await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
         el.click();
       });
 
