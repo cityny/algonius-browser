@@ -81,14 +81,60 @@ export class GetDomStateHandler {
 
       // Extract interactive elements for easier operation
       const interactiveElements = this.extractInteractiveElements(browserState.elementTree);
+      const diagnostics = {
+        domNodesCount: browserState.diagnostics?.domNodesCount ?? null,
+        interactiveCandidateCount: browserState.diagnostics?.interactiveCandidateCount ?? interactiveElements.length,
+        url: browserState.url,
+        permissions: browserState.diagnostics?.permissions ?? 'check',
+        warning: browserState.diagnostics?.warning,
+        originalSize: browserState.diagnostics?.originalSize,
+        payloadSize: browserState.diagnostics?.payloadSize,
+        payloadTruncated: browserState.diagnostics?.payloadTruncated,
+      };
+
+      if (interactiveElements.length === 0) {
+        return {
+          result: {
+            status: 'error/empty',
+            diagnostics,
+          },
+        };
+      }
+
+      const isComplexDom =
+        (typeof diagnostics.domNodesCount === 'number' && diagnostics.domNodesCount > 1200) ||
+        interactiveElements.length > 120 ||
+        diagnostics.payloadTruncated === true;
+
+      const markdownSummary = isComplexDom
+        ? this.buildComplexDomMarkdownSummary(interactiveElements, browserState.url)
+        : undefined;
+
+      const isLargePayload = diagnostics.payloadTruncated === true || diagnostics.warning === 'PAYLOAD_TOO_LARGE';
 
       // Build structured DOM state response
       const domState = {
+        status: isLargePayload ? 'ok/large' : 'ok',
         // Human-readable DOM representation
-        formattedDom: formattedDomText,
+        formattedDom: isLargePayload && markdownSummary ? markdownSummary : formattedDomText,
 
         // Structured element information
         interactiveElements,
+
+        // Concise markdown summary for complex pages (n8n-friendly)
+        markdownSummary,
+
+        // Extraction and payload diagnostics
+        diagnostics,
+
+        // For large payloads, keep technical JSON as optional attachment-like block
+        technicalData: isLargePayload
+          ? {
+              interactiveElements,
+              formattedDom: formattedDomText,
+              diagnostics,
+            }
+          : undefined,
 
         // Page metadata
         meta: {
@@ -135,7 +181,7 @@ export class GetDomStateHandler {
       if (!node) continue;
 
       // Add interactive elements with highlight indices
-      if (node.isInteractive && node.highlightIndex !== null) {
+      if (node.isInteractive && Number.isInteger(node.highlightIndex) && (node.highlightIndex as number) >= 0) {
         interactiveElements.push({
           index: node.highlightIndex,
           tagName: node.tagName,
@@ -156,5 +202,48 @@ export class GetDomStateHandler {
     }
 
     return interactiveElements;
+  }
+
+  private buildComplexDomMarkdownSummary(interactiveElements: any[], url: string): string {
+    const highlightedElements = interactiveElements.filter(
+      element => Number.isInteger(element.index) && Number(element.index) >= 0,
+    );
+
+    const topElements = [...highlightedElements].sort((a, b) => Number(a.index ?? 0) - Number(b.index ?? 0));
+
+    const rows = topElements.map(element => {
+      const index = String(element.index ?? '-');
+      const type = String(element.tagName ?? '').toLowerCase() || String(element.attributes?.type ?? '-') || '-';
+
+      const primaryLabel = String(
+        element.text ||
+          element.attributes?.['aria-label'] ||
+          element.attributes?.placeholder ||
+          element.attributes?.name ||
+          '',
+      );
+      const rawText = primaryLabel.replace(/\|/g, '\\|').trim();
+      const text = rawText.length > 80 ? `${rawText.slice(0, 77)}...` : rawText || '-';
+
+      const idValue = String(element.attributes?.id || '').trim();
+      const classValue = String(element.attributes?.class || '').trim();
+      const idOrClass = [idValue ? `#${idValue}` : '', classValue ? `.${classValue.replace(/\s+/g, '.')}` : '']
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\|/g, '\\|');
+
+      return `| ${index} | ${type || '-'} | ${text} | ${idOrClass || '-'} |`;
+    });
+
+    return [
+      '# Radiografia de Elementos Resaltados',
+      '',
+      `URL: ${url}`,
+      `Elementos resaltados: ${highlightedElements.length}`,
+      '',
+      '| # | Tipo | Texto/Etiqueta | ID/Clase |',
+      '| --- | --- | --- | --- |',
+      ...rows,
+    ].join('\n');
   }
 }

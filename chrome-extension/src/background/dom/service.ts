@@ -1,6 +1,6 @@
 import { createLogger } from '@src/background/log';
-import type { BuildDomTreeArgs, RawDomTreeNode, BuildDomTreeResult } from './raw_types';
-import { type DOMState, type DOMBaseNode, DOMElementNode, DOMTextNode } from './views';
+import type { BuildDomTreeArgs, RawDomTreeNode, BuildDomTreeResult, StageExtractionError } from './raw_types';
+import { type DOMState, type DOMBaseNode, type DOMDiagnostics, DOMElementNode, DOMTextNode } from './views';
 import type { ViewportInfo } from './history/view';
 
 const logger = createLogger('DOMService');
@@ -20,7 +20,7 @@ export interface ReadabilityResult {
 
 declare global {
   interface Window {
-    buildDomTree: (args: BuildDomTreeArgs) => RawDomTreeNode | null;
+    buildDomTree: (args: BuildDomTreeArgs) => unknown;
     turn2Markdown: (selector?: string) => string;
     parserReadability: () => ReadabilityResult | null;
   }
@@ -84,7 +84,7 @@ export async function getClickableElements(
   viewportExpansion = 0,
   debugMode = false,
 ): Promise<DOMState> {
-  const [elementTree, selectorMap] = await _buildDomTree(
+  const [elementTree, selectorMap, diagnostics] = await _buildDomTree(
     tabId,
     url,
     showHighlightElements,
@@ -92,7 +92,7 @@ export async function getClickableElements(
     viewportExpansion,
     debugMode,
   );
-  return { elementTree, selectorMap };
+  return { elementTree, selectorMap, diagnostics };
 }
 
 async function _buildDomTree(
@@ -102,7 +102,7 @@ async function _buildDomTree(
   focusElement = -1,
   viewportExpansion = 0,
   debugMode = false,
-): Promise<[DOMElementNode, Map<number, DOMElementNode>]> {
+): Promise<[DOMElementNode, Map<number, DOMElementNode>, DOMDiagnostics]> {
   // If URL is provided and it's about:blank, return a minimal DOM tree
   if (url === 'about:blank') {
     const elementTree = new DOMElementNode({
@@ -116,14 +116,99 @@ async function _buildDomTree(
       isInViewport: false,
       parent: null,
     });
-    return [elementTree, new Map<number, DOMElementNode>()];
+    return [
+      elementTree,
+      new Map<number, DOMElementNode>(),
+      {
+        domNodesCount: 0,
+        interactiveCandidateCount: 0,
+        url,
+        permissions: 'check',
+      },
+    ];
   }
 
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: args => {
-      // Access buildDomTree from the window context of the target page
-      return window.buildDomTree(args);
+      try {
+        const domNodesCount = document.querySelectorAll('*').length;
+        const payloadLimit = 2 * 1024 * 1024; // 2MB
+
+        const rawResult = window.buildDomTree(args);
+        const parsedResult = typeof rawResult === 'string' ? JSON.parse(rawResult) : rawResult;
+
+        if (!parsedResult || typeof parsedResult !== 'object') {
+          return {
+            error: 'STAGE_EXTRACTION_FAILED',
+            detail: 'buildDomTree returned an invalid payload shape',
+          };
+        }
+
+        const resultObj = parsedResult as Record<string, unknown>;
+        const resultMap = (resultObj.map as Record<string, Record<string, unknown>>) || {};
+        const rootId = (resultObj.rootId as string) || '';
+
+        const interactiveCandidateCount = Object.values(resultMap).filter(
+          node => node && typeof node === 'object' && node.isInteractive === true,
+        ).length;
+
+        const meta =
+          resultObj.meta && typeof resultObj.meta === 'object' ? (resultObj.meta as Record<string, unknown>) : {};
+
+        meta.domNodesCount = domNodesCount;
+        meta.interactiveCandidateCount = interactiveCandidateCount;
+        meta.url = location.href;
+        meta.permissions = 'check';
+        resultObj.meta = meta;
+
+        let payload = JSON.stringify(resultObj);
+        let payloadSize = payload.length;
+        try {
+          payloadSize = new Blob([payload]).size;
+        } catch (_e) {
+          // Ignore and keep string length fallback
+        }
+
+        meta.payloadSize = payloadSize;
+
+        if (payloadSize > payloadLimit) {
+          const sampledMap: Record<string, Record<string, unknown>> = {};
+
+          if (rootId && resultMap[rootId]) {
+            sampledMap[rootId] = resultMap[rootId];
+          }
+
+          const allEntries = Object.entries(resultMap);
+          const interactiveEntries = allEntries.filter(
+            ([, node]) => node && typeof node === 'object' && node.isInteractive === true,
+          );
+          const sourceEntries = interactiveEntries.length > 0 ? interactiveEntries : allEntries;
+
+          for (const [id, node] of sourceEntries) {
+            if (id === rootId) continue;
+            sampledMap[id] = node;
+            if (Object.keys(sampledMap).length >= 50) {
+              break;
+            }
+          }
+
+          resultObj.map = sampledMap;
+          resultObj.warning = 'PAYLOAD_TOO_LARGE';
+          resultObj.originalSize = payloadSize;
+          meta.payloadTruncated = true;
+          meta.sampledCount = Object.keys(sampledMap).length;
+        }
+
+        return JSON.stringify(resultObj);
+      } catch (error) {
+        const err = error as Error;
+        return {
+          error: 'STAGE_EXTRACTION_FAILED',
+          detail: err?.message || String(error),
+          stack: err?.stack,
+        };
+      }
     },
     args: [
       {
@@ -153,6 +238,13 @@ async function _buildDomTree(
     throw new Error(`Failed to parse DOM tree result: ${String(err)}. Raw snippet: ${snippet}`);
   }
 
+  if (evalPage && 'error' in evalPage && evalPage.error === 'STAGE_EXTRACTION_FAILED') {
+    const extractionError = evalPage as unknown as StageExtractionError;
+    throw new Error(
+      `DOM extraction stage failed: ${extractionError.detail}${extractionError.stack ? `\n${extractionError.stack}` : ''}`,
+    );
+  }
+
   if (!evalPage || !evalPage.map || !evalPage.rootId) {
     // If there's no result, include some debugging info from the raw result
     const info = {
@@ -169,7 +261,20 @@ async function _buildDomTree(
     logger.debug('DOM Tree Building Performance Metrics:', evalPage.perfMetrics);
   }
 
-  return _constructDomTree(evalPage);
+  const [elementTree, selectorMap] = _constructDomTree(evalPage);
+
+  const diagnostics: DOMDiagnostics = {
+    domNodesCount: evalPage.meta?.domNodesCount,
+    interactiveCandidateCount: evalPage.meta?.interactiveCandidateCount ?? selectorMap.size,
+    url: evalPage.meta?.url ?? url,
+    permissions: evalPage.meta?.permissions ?? 'check',
+    warning: evalPage.warning,
+    originalSize: evalPage.originalSize,
+    payloadSize: evalPage.meta?.payloadSize,
+    payloadTruncated: evalPage.meta?.payloadTruncated,
+  };
+
+  return [elementTree, selectorMap, diagnostics];
 }
 
 // Helper to safely stringify objects that may contain circular refs for diagnostics

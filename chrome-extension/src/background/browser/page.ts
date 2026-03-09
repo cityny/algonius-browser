@@ -293,6 +293,7 @@ export default class Page {
       // update the state
       this._state.elementTree = content.elementTree;
       this._state.selectorMap = content.selectorMap;
+      this._state.diagnostics = content.diagnostics;
       this._state.url = this._puppeteerPage?.url() || '';
       this._state.title = (await this._puppeteerPage?.title()) || '';
       this._state.screenshot = screenshot;

@@ -54,8 +54,27 @@ export interface PerfMetrics {
   buildDomTreeBreakdown: Record<string, number | Record<string, number>>;
 }
 
+export interface BuildDomTreeMeta {
+  domNodesCount?: number;
+  interactiveCandidateCount?: number;
+  url?: string;
+  permissions?: string;
+  payloadSize?: number;
+  payloadTruncated?: boolean;
+  sampledCount?: number;
+}
+
+export interface StageExtractionError {
+  error: 'STAGE_EXTRACTION_FAILED';
+  detail: string;
+  stack?: string;
+}
+
 export interface BuildDomTreeResult {
   rootId: string;
   map: Record<string, RawDomTreeNode>;
   perfMetrics?: PerfMetrics; // Only included when debugMode is true
+  meta?: BuildDomTreeMeta;
+  warning?: 'PAYLOAD_TOO_LARGE';
+  originalSize?: number;
 }

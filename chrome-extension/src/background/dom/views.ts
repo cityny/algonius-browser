@@ -551,9 +551,22 @@ export class DOMElementNode extends DOMBaseNode {
   }
 }
 
+export interface DOMDiagnostics {
+  domNodesCount?: number;
+  interactiveCandidateCount?: number;
+  url?: string;
+  permissions?: string;
+  warning?: 'PAYLOAD_TOO_LARGE';
+  originalSize?: number;
+  payloadSize?: number;
+  payloadTruncated?: boolean;
+  markdownSummary?: string;
+}
+
 export interface DOMState {
   elementTree: DOMElementNode;
   selectorMap: Map<number, DOMElementNode>;
+  diagnostics?: DOMDiagnostics;
 }
 
 export function domElementNodeToDict(elementTree: DOMBaseNode): unknown {
