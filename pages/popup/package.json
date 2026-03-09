@@ -1,6 +1,6 @@
 {
   "name": "@extension/popup",
-  "version": "1.0.5",
+  "version": "1.0.7-string-hardened",
   "description": "MCP Host Control Popup",
   "private": true,
   "sideEffects": true,

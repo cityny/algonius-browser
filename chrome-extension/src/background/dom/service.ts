@@ -128,6 +128,9 @@ async function _buildDomTree(
     ];
   }
 
+  // Give highly dynamic pages (e.g. Google) a brief extra settle window.
+  await new Promise(resolve => setTimeout(resolve, 500));
+
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: args => {
@@ -263,9 +266,40 @@ async function _buildDomTree(
 
   const [elementTree, selectorMap] = _constructDomTree(evalPage);
 
+  const visualMarkedNodes = Object.values(evalPage.map).filter(
+    node =>
+      node &&
+      typeof node === 'object' &&
+      'highlightIndex' in node &&
+      Number.isInteger((node as { highlightIndex?: number }).highlightIndex) &&
+      ((node as { highlightIndex?: number }).highlightIndex as number) >= 0,
+  ) as Array<{ highlightIndex: number; tagName?: string | null }>;
+
+  const visualCount = visualMarkedNodes.length;
+  const exportCount = selectorMap.size;
+  console.log(`[DOM Sync] Visual elements marked: ${visualCount} | Elements exported to n8n: ${exportCount}`);
+
+  if (exportCount < visualCount) {
+    const exportedIndices = new Set(Array.from(selectorMap.keys()));
+    const ignoredTypeCount: Record<string, number> = {};
+
+    for (const node of visualMarkedNodes) {
+      if (!exportedIndices.has(node.highlightIndex)) {
+        const type = (node.tagName || 'unknown').toLowerCase();
+        ignoredTypeCount[type] = (ignoredTypeCount[type] || 0) + 1;
+      }
+    }
+
+    console.warn(
+      `[DOM Sync][WARN] Exported fewer elements than visual marks. Ignored element types: ${JSON.stringify(ignoredTypeCount)}`,
+    );
+  }
+
   const diagnostics: DOMDiagnostics = {
     domNodesCount: evalPage.meta?.domNodesCount,
     interactiveCandidateCount: evalPage.meta?.interactiveCandidateCount ?? selectorMap.size,
+    visualCount,
+    exportCount,
     url: evalPage.meta?.url ?? url,
     permissions: evalPage.meta?.permissions ?? 'check',
     warning: evalPage.warning,
@@ -386,6 +420,8 @@ export function _parse_node(nodeData: RawDomTreeNode): [DOMBaseNode | null, stri
     isTopElement: elementData.isTopElement ?? false,
     isInViewport: elementData.isInViewport ?? false,
     highlightIndex: elementData.highlightIndex ?? null,
+    highlightColor: elementData.highlightColor,
+    highlightColorIndex: elementData.highlightColorIndex,
     shadowRoot: elementData.shadowRoot ?? false,
     parent: null,
     viewportInfo: viewportInfo,
@@ -443,4 +479,169 @@ export async function getScrollInfo(tabId: number): Promise<[number, number]> {
     throw new Error('Failed to get scroll information');
   }
   return [result.pixels_above, result.pixels_below];
+}
+
+export interface InteractiveElement {
+  index: number;
+  tag: string;
+  id: string | null;
+  text: string;
+  selector: string;
+  bounds: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  attributes: Record<string, string>;
+  isVisible: boolean;
+  hasShadowRoot: boolean;
+}
+
+export class DOMService {
+  constructor(
+    private readonly page: {
+      executeRaw: (scriptTemplate: string, variables?: Record<string, any>) => Promise<any>;
+    },
+  ) {}
+
+  async extractInteractiveElements(): Promise<{
+    url: string;
+    title: string;
+    viewport: { width: number; height: number };
+    elements: InteractiveElement[];
+    timestamp: number;
+  }> {
+    const extractionScript = `
+      const isVisible = (el) => {
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 &&
+               rect.height > 0 &&
+               rect.top < window.innerHeight &&
+               rect.bottom > 0 &&
+               style.display !== 'none' &&
+               style.visibility !== 'hidden' &&
+               style.opacity !== '0';
+      };
+
+      const isInteractive = (el) => {
+        const tag = el.tagName.toLowerCase();
+        const interactiveTags = [
+          'button', 'a', 'input', 'select', 'textarea', 'details', 'summary', 'label', 'option'
+        ];
+
+        const hasClickHandler = el.onclick ||
+                               el.getAttribute('onclick') ||
+                               el.getAttribute('ng-click') ||
+                               el.getAttribute('@click');
+
+        const role = (el.getAttribute('role') || '').toLowerCase();
+        const interactiveRoles = [
+          'button', 'link', 'menuitem', 'tab', 'checkbox', 'radio', 'switch', 'textbox', 'combobox'
+        ];
+
+        const isClickable = window.getComputedStyle(el).cursor === 'pointer';
+        const tabIndex = el.getAttribute('tabindex');
+
+        return interactiveTags.includes(tag) ||
+               !!hasClickHandler ||
+               interactiveRoles.includes(role) ||
+               (isClickable && tabIndex !== '-1') ||
+               el.contentEditable === 'true';
+      };
+
+      const generateSelector = (el) => {
+        if (el.getAttribute('data-testid')) return '[data-testid="' + el.getAttribute('data-testid') + '"]';
+        if (el.id) return '#' + el.id;
+        if (el.name) return el.tagName.toLowerCase() + '[name="' + el.name + '"]';
+        if (el.getAttribute('aria-label')) return el.tagName.toLowerCase() + '[aria-label="' + el.getAttribute('aria-label') + '"]';
+
+        if (el.className) {
+          const classes = String(el.className).split(' ').filter(c => c && !c.includes(':'));
+          if (classes.length > 0) {
+            return el.tagName.toLowerCase() + '.' + classes[0];
+          }
+        }
+
+        let path = el.tagName.toLowerCase();
+        let parent = el.parentElement;
+        let current = el;
+        while (parent) {
+          const siblings = Array.from(parent.children).filter(s => s.tagName === current.tagName);
+          if (siblings.length > 1) {
+            const index = siblings.indexOf(current) + 1;
+            path = current.tagName.toLowerCase() + ':nth-of-type(' + index + ') > ' + path;
+          } else {
+            path = current.tagName.toLowerCase() + ' > ' + path;
+          }
+          current = parent;
+          parent = parent.parentElement;
+          if (path.split(' > ').length > 3) break;
+        }
+        return path;
+      };
+
+      const traverse = (root, results = [], depth = 0) => {
+        if (depth > 10) return results;
+        const elements = root.querySelectorAll('*');
+
+        for (let i = 0; i < elements.length; i++) {
+          const el = elements[i];
+
+          if (el.shadowRoot) {
+            traverse(el.shadowRoot, results, depth + 1);
+          }
+
+          if (isInteractive(el) && isVisible(el)) {
+            const rect = el.getBoundingClientRect();
+            results.push({
+              index: results.length,
+              tag: el.tagName,
+              id: el.id || null,
+              text: String(el.innerText || el.value || el.placeholder || '').slice(0, 150),
+              selector: generateSelector(el),
+              bounds: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+              },
+              attributes: Array.from(el.attributes).reduce((acc, attr) => {
+                if (!attr.name.startsWith('on') && !attr.name.includes('token') && !attr.name.includes('key')) {
+                  acc[attr.name] = attr.value;
+                }
+                return acc;
+              }, {}),
+              isVisible: true,
+              hasShadowRoot: !!el.shadowRoot,
+            });
+          }
+        }
+
+        return results;
+      };
+
+      return {
+        url: window.location.href,
+        title: document.title,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        elements: traverse(document),
+        timestamp: Date.now(),
+      };
+    `;
+
+    return (await this.page.executeRaw(extractionScript)) as {
+      url: string;
+      title: string;
+      viewport: { width: number; height: number };
+      elements: InteractiveElement[];
+      timestamp: number;
+    };
+  }
+
+  async refreshElements(): Promise<InteractiveElement[]> {
+    const result = await this.extractInteractiveElements();
+    return result.elements;
+  }
 }

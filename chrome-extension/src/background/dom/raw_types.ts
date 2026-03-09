@@ -18,6 +18,8 @@ export type RawDomElementNode = {
   isTopElement?: boolean;
   isInViewport?: boolean;
   highlightIndex?: number;
+  highlightColor?: string;
+  highlightColorIndex?: number;
   viewportCoordinates?: CoordinateSet;
   pageCoordinates?: CoordinateSet;
   viewportInfo?: ViewportInfo;

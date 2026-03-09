@@ -61,6 +61,8 @@ export class DOMElementNode extends DOMBaseNode {
   isInViewport: boolean;
   shadowRoot: boolean;
   highlightIndex: number | null;
+  highlightColor?: string;
+  highlightColorIndex?: number;
   viewportCoordinates?: CoordinateSet;
   pageCoordinates?: CoordinateSet;
   viewportInfo?: ViewportInfo;
@@ -83,6 +85,8 @@ export class DOMElementNode extends DOMBaseNode {
     isInViewport?: boolean;
     shadowRoot?: boolean;
     highlightIndex?: number | null;
+    highlightColor?: string;
+    highlightColorIndex?: number;
     viewportCoordinates?: CoordinateSet;
     pageCoordinates?: CoordinateSet;
     viewportInfo?: ViewportInfo;
@@ -99,6 +103,8 @@ export class DOMElementNode extends DOMBaseNode {
     this.isInViewport = params.isInViewport ?? false;
     this.shadowRoot = params.shadowRoot ?? false;
     this.highlightIndex = params.highlightIndex ?? null;
+    this.highlightColor = params.highlightColor;
+    this.highlightColorIndex = params.highlightColorIndex;
     this.viewportCoordinates = params.viewportCoordinates;
     this.pageCoordinates = params.pageCoordinates;
     this.viewportInfo = params.viewportInfo;
@@ -554,6 +560,8 @@ export class DOMElementNode extends DOMBaseNode {
 export interface DOMDiagnostics {
   domNodesCount?: number;
   interactiveCandidateCount?: number;
+  visualCount?: number;
+  exportCount?: number;
   url?: string;
   permissions?: string;
   warning?: 'PAYLOAD_TOO_LARGE';

@@ -192,6 +192,31 @@ window.buildDomTree = (
 
   const HIGHLIGHT_CONTAINER_ID = 'playwright-highlight-container';
 
+  const HIGHLIGHT_COLORS = [
+    '#FF0000',
+    '#00FF00',
+    '#0000FF',
+    '#FFA500',
+    '#800080',
+    '#008080',
+    '#FF69B4',
+    '#4B0082',
+    '#FF4500',
+    '#2E8B57',
+    '#DC143C',
+    '#4682B4',
+  ];
+
+  function getHighlightColorData(index) {
+    const colorIndex = index % HIGHLIGHT_COLORS.length;
+    const baseColor = HIGHLIGHT_COLORS[colorIndex];
+    return {
+      colorIndex,
+      baseColor,
+      backgroundColor: baseColor + '1A',
+    };
+  }
+
   /**
    * Highlights an element in the DOM and returns the index of the next element.
    */
@@ -227,24 +252,8 @@ window.buildDomTree = (
 
       if (!rects || rects.length === 0) return index; // Exit if no rects
 
-      // Generate a color based on the index
-      const colors = [
-        '#FF0000',
-        '#00FF00',
-        '#0000FF',
-        '#FFA500',
-        '#800080',
-        '#008080',
-        '#FF69B4',
-        '#4B0082',
-        '#FF4500',
-        '#2E8B57',
-        '#DC143C',
-        '#4682B4',
-      ];
-      const colorIndex = index % colors.length;
-      const baseColor = colors[colorIndex];
-      const backgroundColor = baseColor + '1A'; // 10% opacity version of the color
+      // Generate a deterministic color from the same index shown on-screen.
+      const { baseColor, backgroundColor } = getHighlightColorData(index);
 
       // Get iframe offset if necessary
       let iframeOffset = { x: 0, y: 0 };
@@ -657,8 +666,20 @@ window.buildDomTree = (
     }
 
     const tagName = element.tagName.toLowerCase();
-    const role = element.getAttribute('role');
-    const ariaRole = element.getAttribute('aria-role');
+    const role = (element.getAttribute('role') || '').toLowerCase();
+    const ariaRole = (element.getAttribute('aria-role') || '').toLowerCase();
+
+    // Google-style interaction markers (frequent in Search UI)
+    const hasGoogleInteractionAttr = element.hasAttribute('data-ved') || element.hasAttribute('jsaction');
+
+    if ((tagName === 'div' || tagName === 'span') && hasGoogleInteractionAttr) {
+      return true;
+    }
+
+    // Deep search: aria-label often marks actionable controls even on non-standard tags
+    if (element.hasAttribute('aria-label')) {
+      return true;
+    }
 
     // Added enhancement to capture dropdown interactive elements
     if (
@@ -891,8 +912,10 @@ window.buildDomTree = (
       element.hasAttribute('onclick') ||
       element.hasAttribute('role') ||
       element.hasAttribute('tabindex') ||
-      element.hasAttribute('aria-') ||
+      element.hasAttribute('aria-label') ||
       element.hasAttribute('data-action') ||
+      element.hasAttribute('data-ved') ||
+      element.hasAttribute('jsaction') ||
       element.getAttribute('contenteditable') == 'true';
 
     return hasQuickInteractiveAttr;
@@ -953,6 +976,16 @@ window.buildDomTree = (
     }
     // Check interactive roles
     if (role && INTERACTIVE_ROLES.has(role)) {
+      return true;
+    }
+
+    // Google-specific action markers
+    if (element.hasAttribute('data-ved') || element.hasAttribute('jsaction')) {
+      return true;
+    }
+
+    // Deep-search behavior for non-standard interactive controls
+    if (element.hasAttribute('aria-label')) {
       return true;
     }
     // Check contenteditable
@@ -1040,6 +1073,9 @@ window.buildDomTree = (
       nodeData.isInViewport = isInExpandedViewport(node, viewportExpansion);
       if (nodeData.isInViewport) {
         nodeData.highlightIndex = highlightIndex++;
+        const colorData = getHighlightColorData(nodeData.highlightIndex);
+        nodeData.highlightColor = colorData.baseColor;
+        nodeData.highlightColorIndex = colorData.colorIndex;
 
         if (doHighlightElements) {
           if (focusHighlightIndex >= 0) {
@@ -1342,7 +1378,7 @@ window.buildDomTree = (
         nd.children = nd.children.filter(c => !!keepCache[c]);
       }
 
-      // Reduce attributes to only id and class (keep role/aria/tabindex if present)
+      // Reduce attributes to stable IDs/classes and interaction markers used by modern web apps.
       const orig = nd.attributes || {};
       const reduced = {};
       if (orig.id) reduced.id = orig.id;
@@ -1350,6 +1386,8 @@ window.buildDomTree = (
       if (orig.role) reduced.role = orig.role;
       if (orig['aria-label']) reduced['aria-label'] = orig['aria-label'];
       if (orig.tabindex) reduced.tabindex = orig.tabindex;
+      if (orig['data-ved']) reduced['data-ved'] = orig['data-ved'];
+      if (orig.jsaction) reduced.jsaction = orig.jsaction;
       nd.attributes = reduced;
     }
   } catch (e) {

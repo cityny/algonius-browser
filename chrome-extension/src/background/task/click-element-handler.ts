@@ -245,3 +245,109 @@ export class ClickElementHandler {
     }
   }
 }
+
+export interface ClickRequest {
+  selector?: string;
+  index?: number;
+  selectorMap?: Record<string, string>;
+  waitForNavigation?: boolean;
+  timeout?: number;
+}
+
+export interface ClickResult {
+  success: boolean;
+  selectorUsed?: string;
+  elementInfo?: {
+    tag: string;
+    text: string;
+    bounds: any;
+  };
+  error?: string;
+  preCheck?: {
+    exists: boolean;
+    visible?: boolean;
+    rect?: any;
+    tag?: string;
+    text?: string;
+  };
+}
+
+export async function clickElementHandler(
+  page: {
+    executeRaw: (scriptTemplate: string, variables?: Record<string, any>) => Promise<any>;
+    scrollToElement: (selector: string) => Promise<{ success: boolean; error?: string }>;
+    clickElement: (selector: string) => Promise<{ success: boolean; tag?: string; text?: string; error?: string }>;
+    waitForPageLoadState: (timeout?: number) => Promise<void>;
+  },
+  params: ClickRequest,
+): Promise<ClickResult> {
+  let targetSelector: string;
+  if (params.selector) {
+    targetSelector = params.selector;
+  } else if (params.index !== undefined && params.selectorMap) {
+    targetSelector = params.selectorMap[params.index];
+    if (!targetSelector) {
+      throw new Error(
+        `Index ${params.index} not found in selectorMap. Available: ${Object.keys(params.selectorMap).join(', ')}`,
+      );
+    }
+  } else {
+    throw new Error('Must provide selector or index+selectorMap');
+  }
+
+  const preCheck = await page.executeRaw(
+    `
+    const el = document.querySelector(__vars.selector);
+    if (!el) return { exists: false };
+
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+
+    return {
+      exists: true,
+      visible: style.display !== 'none' && style.visibility !== 'hidden',
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      tag: el.tagName,
+      text: String(el.innerText || '').slice(0, 50),
+    };
+  `,
+    { selector: targetSelector },
+  );
+
+  if (!preCheck.exists) {
+    return {
+      success: false,
+      error: `Element does not exist: ${targetSelector}`,
+      selectorUsed: targetSelector,
+      preCheck,
+    };
+  }
+
+  if (!preCheck.visible) {
+    await page.scrollToElement(targetSelector);
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+
+  const clickResult = await page.clickElement(targetSelector);
+
+  if (params.waitForNavigation) {
+    try {
+      await page.waitForPageLoadState(params.timeout || 5000);
+    } catch (_e) {
+      // Non-fatal: click may not trigger navigation.
+    }
+  }
+
+  return {
+    ...clickResult,
+    selectorUsed: targetSelector,
+    preCheck,
+    elementInfo: preCheck.exists
+      ? {
+          tag: preCheck.tag || '',
+          text: preCheck.text || '',
+          bounds: preCheck.rect,
+        }
+      : undefined,
+  };
+}

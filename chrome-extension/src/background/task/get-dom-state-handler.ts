@@ -9,6 +9,7 @@ import type BrowserContext from '../browser/context';
 import { createLogger } from '../log';
 import type { RpcHandler, RpcRequest, RpcResponse } from '../mcp/host-manager';
 import { DOMElementNode } from '../dom/views';
+import { DOMService } from '../dom/service';
 
 /**
  * Handler for the 'get_dom_state' RPC method
@@ -79,11 +80,13 @@ export class GetDomStateHandler {
         formattedDomText = 'empty page';
       }
 
-      // Extract interactive elements for easier operation
-      const interactiveElements = this.extractInteractiveElements(browserState.elementTree);
+      // Rule of sync: export exactly what was visually highlighted.
+      const interactiveElements = this.extractInteractiveElementsFromSelectorMap(browserState.selectorMap);
       const diagnostics = {
         domNodesCount: browserState.diagnostics?.domNodesCount ?? null,
         interactiveCandidateCount: browserState.diagnostics?.interactiveCandidateCount ?? interactiveElements.length,
+        visualCount: browserState.diagnostics?.visualCount ?? interactiveElements.length,
+        exportCount: browserState.diagnostics?.exportCount ?? interactiveElements.length,
         url: browserState.url,
         permissions: browserState.diagnostics?.permissions ?? 'check',
         warning: browserState.diagnostics?.warning,
@@ -101,14 +104,7 @@ export class GetDomStateHandler {
         };
       }
 
-      const isComplexDom =
-        (typeof diagnostics.domNodesCount === 'number' && diagnostics.domNodesCount > 1200) ||
-        interactiveElements.length > 120 ||
-        diagnostics.payloadTruncated === true;
-
-      const markdownSummary = isComplexDom
-        ? this.buildComplexDomMarkdownSummary(interactiveElements, browserState.url)
-        : undefined;
+      const markdownSummary = this.buildComplexDomMarkdownSummary(interactiveElements, browserState.url);
 
       const isLargePayload = diagnostics.payloadTruncated === true || diagnostics.warning === 'PAYLOAD_TOO_LARGE';
 
@@ -170,38 +166,44 @@ export class GetDomStateHandler {
    * @param tree The DOM element tree
    * @returns Array of interactive elements with metadata
    */
-  private extractInteractiveElements(tree: DOMElementNode): any[] {
+  private extractInteractiveElementsFromSelectorMap(selectorMap: Map<number, DOMElementNode>): any[] {
     const interactiveElements: any[] = [];
 
-    // Use breadth-first search to traverse the DOM tree
-    const queue: DOMElementNode[] = [tree];
-
-    while (queue.length > 0) {
-      const node = queue.shift();
-      if (!node) continue;
-
-      // Add interactive elements with highlight indices
-      if (node.isInteractive && Number.isInteger(node.highlightIndex) && (node.highlightIndex as number) >= 0) {
-        interactiveElements.push({
-          index: node.highlightIndex,
-          tagName: node.tagName,
-          text: node.getAllTextTillNextClickableElement(),
-          attributes: { ...node.attributes },
-          isInViewport: node.isInViewport,
-          selector: node.getEnhancedCssSelector(),
-          isNew: node.isNew,
-        });
-      }
-
-      // Add children to queue
-      for (const child of node.children) {
-        if (child instanceof DOMElementNode) {
-          queue.push(child);
-        }
-      }
+    const sortedEntries = Array.from(selectorMap.entries()).sort(([a], [b]) => a - b);
+    for (const [highlightIndex, node] of sortedEntries) {
+      const text = (node.getAllTextTillNextClickableElement() || '').trim();
+      interactiveElements.push({
+        index: highlightIndex,
+        highlightIndex,
+        highlightColor: node.highlightColor ?? null,
+        highlightColorIndex: node.highlightColorIndex ?? null,
+        tagName: node.tagName,
+        text,
+        label: this.buildPreferredLabel(node, text),
+        attributes: { ...node.attributes },
+        isInViewport: node.isInViewport,
+        selector: node.getEnhancedCssSelector(),
+        isNew: node.isNew,
+      });
     }
 
     return interactiveElements;
+  }
+
+  private buildPreferredLabel(node: DOMElementNode, text: string): string {
+    const trimmedText = (text || '').trim();
+    if (trimmedText) {
+      return trimmedText;
+    }
+
+    const attrs = node.attributes || {};
+    const fallback = (attrs['aria-label'] || attrs.title || attrs.placeholder || '').trim();
+    const tag = String(node.tagName || 'element').toUpperCase();
+    if (fallback) {
+      return `${tag} [${fallback}]`;
+    }
+
+    return tag;
   }
 
   private buildComplexDomMarkdownSummary(interactiveElements: any[], url: string): string {
@@ -215,13 +217,7 @@ export class GetDomStateHandler {
       const index = String(element.index ?? '-');
       const type = String(element.tagName ?? '').toLowerCase() || String(element.attributes?.type ?? '-') || '-';
 
-      const primaryLabel = String(
-        element.text ||
-          element.attributes?.['aria-label'] ||
-          element.attributes?.placeholder ||
-          element.attributes?.name ||
-          '',
-      );
+      const primaryLabel = String(element.label || '');
       const rawText = primaryLabel.replace(/\|/g, '\\|').trim();
       const text = rawText.length > 80 ? `${rawText.slice(0, 77)}...` : rawText || '-';
 
@@ -246,4 +242,139 @@ export class GetDomStateHandler {
       ...rows,
     ].join('\n');
   }
+}
+
+export interface DOMStateRequest {
+  highlight?: boolean;
+  maxElements?: number;
+  includeAttributes?: string[];
+}
+
+export interface DOMStateResponse {
+  url: string;
+  title: string;
+  viewport: { width: number; height: number };
+  elementCount: number;
+  selectorMap: Record<string, string>;
+  elements: Array<{
+    index: number;
+    tag: string;
+    text: string;
+    bounds: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+  }>;
+  screenshot?: string;
+}
+
+export async function getDomStateHandler(
+  page: {
+    executeRaw: (scriptTemplate: string, variables?: Record<string, any>) => Promise<any>;
+    captureScreenshot: () => Promise<string>;
+  },
+  params: DOMStateRequest = {},
+): Promise<DOMStateResponse> {
+  const domService = new DOMService(page);
+  const extraction = await domService.extractInteractiveElements();
+
+  let elements = extraction.elements;
+  if (params.maxElements && elements.length > params.maxElements) {
+    elements = elements.slice(0, params.maxElements);
+  }
+
+  if (params.highlight) {
+    await injectHighlights(page, elements);
+  }
+
+  const selectorMap = elements.reduce(
+    (acc, el) => {
+      acc[el.index] = el.selector;
+      return acc;
+    },
+    {} as Record<string, string>,
+  );
+
+  let screenshot: string | undefined;
+  try {
+    screenshot = await page.captureScreenshot();
+  } catch (e) {
+    console.warn('Screenshot failed:', e);
+  }
+
+  return {
+    url: extraction.url,
+    title: extraction.title,
+    viewport: extraction.viewport,
+    elementCount: elements.length,
+    selectorMap,
+    elements: elements.map(e => ({
+      index: e.index,
+      tag: e.tag,
+      text: e.text,
+      bounds: e.bounds,
+    })),
+    screenshot,
+  };
+}
+
+async function injectHighlights(
+  page: {
+    executeRaw: (scriptTemplate: string, variables?: Record<string, any>) => Promise<any>;
+  },
+  elements: Array<{
+    index: number;
+    bounds: { x: number; y: number; width: number; height: number };
+  }>,
+): Promise<void> {
+  const highlightScript = `
+    const oldHighlights = document.querySelectorAll('.mcp-highlight-overlay, .mcp-highlight-label');
+    oldHighlights.forEach(el => el.remove());
+
+    const elements = __vars.elements;
+
+    elements.forEach((el) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'mcp-highlight-overlay';
+      overlay.style.cssText = [
+        'position: fixed',
+        'border: 2px solid #ff4444',
+        'background: rgba(255, 68, 68, 0.15)',
+        'z-index: 2147483646',
+        'pointer-events: none',
+        'box-sizing: border-box',
+      ].join(';');
+      overlay.style.left = el.bounds.x + 'px';
+      overlay.style.top = el.bounds.y + 'px';
+      overlay.style.width = el.bounds.width + 'px';
+      overlay.style.height = el.bounds.height + 'px';
+
+      const label = document.createElement('div');
+      label.className = 'mcp-highlight-label';
+      label.textContent = String(el.index);
+      label.style.cssText = [
+        'position: fixed',
+        'background: #ff4444',
+        'color: white',
+        'font-family: monospace',
+        'font-size: 12px',
+        'font-weight: bold',
+        'padding: 2px 6px',
+        'border-radius: 3px',
+        'z-index: 2147483647',
+        'pointer-events: none',
+      ].join(';');
+      label.style.left = el.bounds.x + 'px';
+      label.style.top = el.bounds.y - 20 + 'px';
+
+      document.body.appendChild(overlay);
+      document.body.appendChild(label);
+    });
+
+    return { highlighted: elements.length };
+  `;
+
+  await page.executeRaw(highlightScript, { elements });
 }

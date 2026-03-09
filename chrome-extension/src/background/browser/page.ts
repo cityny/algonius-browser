@@ -385,7 +385,7 @@ export default class Page {
         return await target.evaluate(String(fnOrString));
       }
 
-      // Build a self-contained script so no function object needs to cross the transport boundary.
+      // String-first hardening: never pass a function object across the transport boundary.
       const fnSource = fnOrString.toString();
       const argsJson = JSON.stringify(safeArgs);
       const script = `(() => { const __fn = (${fnSource}); const __args = ${argsJson}; return __fn(...__args); })()`;
@@ -393,10 +393,7 @@ export default class Page {
     };
 
     try {
-      if (typeof fnOrString === 'function') {
-        return await target.evaluate(fnOrString, ...safeArgs);
-      }
-      return await target.evaluate(String(fnOrString));
+      return await runAsString();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes('cannot be serialized') || message.includes('Passed function cannot be serialized')) {
@@ -406,6 +403,155 @@ export default class Page {
       logger.warning('safeEvaluate failed:', err);
       throw err;
     }
+  }
+
+  // String-first raw execution helper for hardened handlers.
+  public async executeRaw(scriptTemplate: string, variables: Record<string, any> = {}): Promise<any> {
+    if (!this._puppeteerPage) {
+      throw new Error('Puppeteer page is not connected');
+    }
+
+    const serializedVars = JSON.stringify(variables, (key, value) => {
+      if (typeof value === 'function') {
+        throw new Error(`Variable ${key} is function, not serializable`);
+      }
+      return value;
+    });
+
+    const wrappedScript = `
+      (function() {
+        const __vars = ${serializedVars};
+        try {
+          ${scriptTemplate}
+        } catch (err) {
+          return { __error: err.message, __stack: err.stack };
+        }
+      })()
+    `;
+
+    const result = await this._puppeteerPage.evaluate(wrappedScript);
+    if (result && typeof result === 'object' && '__error' in result) {
+      const errorPayload = result as { __error: string; __stack?: string };
+      throw new Error(
+        `Script error: ${errorPayload.__error}${errorPayload.__stack ? `\n${errorPayload.__stack}` : ''}`,
+      );
+    }
+    return result;
+  }
+
+  public async getTitle(): Promise<string> {
+    return (await this.executeRaw('return document.title;')) as string;
+  }
+
+  public async getUrl(): Promise<string> {
+    return (await this.executeRaw('return window.location.href;')) as string;
+  }
+
+  public async getViewport(): Promise<{ width: number; height: number; devicePixelRatio: number }> {
+    return (await this.executeRaw(`
+      return {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        devicePixelRatio: window.devicePixelRatio,
+      };
+    `)) as { width: number; height: number; devicePixelRatio: number };
+  }
+
+  public async clickElement(
+    selector: string,
+  ): Promise<{ success: boolean; tag?: string; text?: string; error?: string }> {
+    return (await this.executeRaw(
+      `
+      const el = document.querySelector(__vars.selector);
+      if (!el) return { success: false, error: 'Element not found: ' + __vars.selector };
+
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') {
+        return { success: false, error: 'Element not visible' };
+      }
+
+      ['mousedown', 'click', 'mouseup'].forEach(type => {
+        const event = new MouseEvent(type, {
+          view: window,
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + rect.width / 2,
+          clientY: rect.top + rect.height / 2,
+          button: 0,
+        });
+        el.dispatchEvent(event);
+      });
+
+      if (typeof el.click === 'function') {
+        el.click();
+      }
+
+      return {
+        success: true,
+        tag: el.tagName,
+        text: String(el.innerText || el.value || '').slice(0, 50),
+      };
+    `,
+      { selector },
+    )) as { success: boolean; tag?: string; text?: string; error?: string };
+  }
+
+  public async fillInput(selector: string, value: string): Promise<{ success: boolean; error?: string }> {
+    return (await this.executeRaw(
+      `
+      const el = document.querySelector(__vars.selector);
+      if (!el) return { success: false, error: 'Input not found' };
+
+      if (typeof el.focus === 'function') el.focus();
+      if (typeof el.select === 'function') el.select();
+      if ('value' in el) {
+        el.value = __vars.value;
+      } else if (el.isContentEditable) {
+        el.textContent = __vars.value;
+      }
+
+      ['input', 'change', 'blur'].forEach(eventType => {
+        el.dispatchEvent(new Event(eventType, { bubbles: true }));
+      });
+
+      return { success: true };
+    `,
+      { selector, value },
+    )) as { success: boolean; error?: string };
+  }
+
+  public async scrollToElement(selector: string): Promise<{ success: boolean; error?: string }> {
+    return (await this.executeRaw(
+      `
+      const el = document.querySelector(__vars.selector);
+      if (!el) return { success: false, error: 'Element not found' };
+      el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+      return { success: true };
+    `,
+      { selector },
+    )) as { success: boolean; error?: string };
+  }
+
+  public async waitForSelector(selector: string, timeout = 5000): Promise<boolean> {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+      const exists = await this.executeRaw('return !!document.querySelector(__vars.selector);', { selector });
+      if (exists) return true;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return false;
+  }
+
+  public async captureScreenshot(): Promise<string> {
+    if (!this._puppeteerPage) {
+      throw new Error('Puppeteer page is not connected');
+    }
+
+    const client = await this._puppeteerPage.target().createCDPSession();
+    const { data } = await client.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
+    await client.detach();
+    return data;
   }
 
   url(): string {
@@ -670,7 +816,7 @@ export default class Page {
           const element = await this._puppeteerPage.$(selector);
           if (element) {
             // Check if element is visible
-            const isVisible = await element.evaluate(el => {
+            const isVisible = await this.safeEvaluate(element, (el: Element) => {
               const style = window.getComputedStyle(el);
               return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
             });
@@ -707,7 +853,7 @@ export default class Page {
       }
 
       // Evaluate the select element to get all options
-      const options = await elementHandle.evaluate(select => {
+      const options = await this.safeEvaluate(elementHandle, (select: Element) => {
         if (!(select instanceof HTMLSelectElement)) {
           throw new Error('Element is not a select element');
         }
@@ -756,8 +902,9 @@ export default class Page {
       }
 
       // Verify dropdown and select option in one call
-      const result = await elementHandle.evaluate(
-        (select, optionText, elementIndex) => {
+      const result = await this.safeEvaluate(
+        elementHandle,
+        (select: Element, optionText: string, elementIndex: number) => {
           if (!(select instanceof HTMLSelectElement)) {
             return {
               found: false,
@@ -956,18 +1103,22 @@ export default class Page {
         const elementHandle = await this._puppeteerPage.$(selector);
         if (elementHandle) {
           // Validate this is the right element by checking attributes
-          const isMatch = await elementHandle.evaluate((el, expectedAttrs) => {
-            // Simple validation: check if key attributes match
-            for (const [key, value] of Object.entries(expectedAttrs)) {
-              if (key === 'id' || key === 'name' || key === 'data-testid') {
-                const actualValue = el.getAttribute(key);
-                if (actualValue !== value) {
-                  return false;
+          const isMatch = await this.safeEvaluate(
+            elementHandle,
+            (el: Element, expectedAttrs: Record<string, string>) => {
+              // Simple validation: check if key attributes match
+              for (const [key, value] of Object.entries(expectedAttrs)) {
+                if (key === 'id' || key === 'name' || key === 'data-testid') {
+                  const actualValue = el.getAttribute(key);
+                  if (actualValue !== value) {
+                    return false;
+                  }
                 }
               }
-            }
-            return true;
-          }, element.attributes);
+              return true;
+            },
+            element.attributes,
+          );
 
           if (isMatch) {
             logger.debug('Element located using basic attributes:', selector);
@@ -1067,20 +1218,20 @@ export default class Page {
       }
 
       // Get element properties to determine input method
-      const tagName = await element.evaluate(el => el.tagName.toLowerCase());
-      const isContentEditable = await element.evaluate(el => {
+      const tagName = await this.safeEvaluate(element, (el: Element) => el.tagName.toLowerCase());
+      const isContentEditable = await this.safeEvaluate(element, (el: Element) => {
         if (el instanceof HTMLElement) {
           return el.isContentEditable;
         }
         return false;
       });
-      const isReadOnly = await element.evaluate(el => {
+      const isReadOnly = await this.safeEvaluate(element, (el: Element) => {
         if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
           return el.readOnly;
         }
         return false;
       });
-      const isDisabled = await element.evaluate(el => {
+      const isDisabled = await this.safeEvaluate(element, (el: Element) => {
         if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
           return el.disabled;
         }
@@ -1090,7 +1241,7 @@ export default class Page {
       // Choose appropriate input method based on element properties
       if ((isContentEditable || tagName === 'input') && !isReadOnly && !isDisabled) {
         // Clear content and set value directly
-        await element.evaluate(el => {
+        await this.safeEvaluate(element, (el: Element) => {
           if (el instanceof HTMLElement) {
             el.textContent = '';
           }
@@ -1106,16 +1257,20 @@ export default class Page {
         await element.type(text, { delay: 50 });
       } else {
         // Use direct value setting for other types of elements
-        await element.evaluate((el, value) => {
-          if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-            el.value = value;
-          } else if (el instanceof HTMLElement && el.isContentEditable) {
-            el.textContent = value;
-          }
-          // Dispatch events
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        }, text);
+        await this.safeEvaluate(
+          element,
+          (el: Element, value: string) => {
+            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+              el.value = value;
+            } else if (el instanceof HTMLElement && el.isContentEditable) {
+              el.textContent = value;
+            }
+            // Dispatch events
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          },
+          text,
+        );
       }
 
       // Wait for page stability after input
@@ -1174,7 +1329,7 @@ export default class Page {
     // eslint-disable-next-line no-constant-condition
     while (true) {
       // Check if element is in viewport
-      const isVisible = await element.evaluate(el => {
+      const isVisible = await this.safeEvaluate(element, (el: Element) => {
         const rect = el.getBoundingClientRect();
 
         // Check if element has size
@@ -1252,7 +1407,7 @@ export default class Page {
         // Second attempt: Use evaluate to perform a direct click
         logger.info('Failed to click element, trying again', error);
         try {
-          await element.evaluate(el => (el as HTMLElement).click());
+          await this.safeEvaluate(element, (el: Element) => (el as HTMLElement).click());
         } catch (secondError) {
           // if URLNotAllowedError, throw it
           if (secondError instanceof URLNotAllowedError) {
@@ -1554,5 +1709,50 @@ export default class Page {
 
       throw new URLNotAllowedError(errorMessage);
     }
+  }
+}
+
+// Backward-compatible wrapper for string-first hardened API.
+export class HardenedPage {
+  constructor(private readonly page: Page) {}
+
+  async executeRaw(scriptTemplate: string, variables: Record<string, any> = {}): Promise<any> {
+    return await this.page.executeRaw(scriptTemplate, variables);
+  }
+
+  async getTitle(): Promise<string> {
+    return await this.page.getTitle();
+  }
+
+  async getUrl(): Promise<string> {
+    return await this.page.getUrl();
+  }
+
+  async getViewport(): Promise<{ width: number; height: number; devicePixelRatio: number }> {
+    return await this.page.getViewport();
+  }
+
+  async clickElement(selector: string): Promise<{ success: boolean; tag?: string; text?: string; error?: string }> {
+    return await this.page.clickElement(selector);
+  }
+
+  async fillInput(selector: string, value: string): Promise<{ success: boolean; error?: string }> {
+    return await this.page.fillInput(selector, value);
+  }
+
+  async scrollToElement(selector: string): Promise<{ success: boolean; error?: string }> {
+    return await this.page.scrollToElement(selector);
+  }
+
+  async waitForSelector(selector: string, timeout = 5000): Promise<boolean> {
+    return await this.page.waitForSelector(selector, timeout);
+  }
+
+  async captureScreenshot(): Promise<string> {
+    return await this.page.captureScreenshot();
+  }
+
+  async waitForPageLoadState(timeout?: number): Promise<void> {
+    await this.page.waitForPageLoadState(timeout);
   }
 }

@@ -899,7 +899,7 @@ export class TypeValueHandler {
       if (!elementHandle) return;
 
       // Clear possible focus and selection states
-      await elementHandle.evaluate((el: HTMLElement) => {
+      await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
         if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
           el.blur(); // Remove focus
           el.focus(); // Re-focus to ensure it's ready
@@ -1520,7 +1520,7 @@ export class TypeValueHandler {
     }
 
     // Final event dispatch to ensure all events are triggered
-    await elementHandle.evaluate((el: HTMLElement) => {
+    await page.safeEvaluate(elementHandle, (el: HTMLElement) => {
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     });
