@@ -314,20 +314,21 @@ export default class Page {
 
     try {
       // First disable animations/transitions
-      await this.safeEvaluate(this._puppeteerPage, () => {
+      const disableAnimationsScript = `(() => {
         const styleId = 'puppeteer-disable-animations';
         if (!document.getElementById(styleId)) {
           const style = document.createElement('style');
           style.id = styleId;
-          style.textContent = `
-            *, *::before, *::after {
-              animation: none !important;
-              transition: none !important;
-            }
-          `;
+          style.textContent = [
+            '*, *::before, *::after {',
+            '  animation: none !important;',
+            '  transition: none !important;',
+            '}',
+          ].join('\\n');
           document.head.appendChild(style);
         }
-      });
+      })()`;
+      await this.safeEvaluate(this._puppeteerPage, disableAnimationsScript);
 
       // Take the screenshot using JPEG format with 80% quality
       const screenshot = await this._puppeteerPage.screenshot({
@@ -339,12 +340,15 @@ export default class Page {
 
       // Clean up the style element
       try {
-        await this.safeEvaluate(this._puppeteerPage, () => {
-          const style = document.getElementById('puppeteer-disable-animations');
-          if (style) {
-            style.remove();
-          }
-        });
+        await this.safeEvaluate(
+          this._puppeteerPage,
+          `(() => {
+            const style = document.getElementById('puppeteer-disable-animations');
+            if (style) {
+              style.remove();
+            }
+          })()`,
+        );
       } catch (cleanupErr) {
         logger.debug('Failed to clean up screenshot styles:', cleanupErr);
       }
@@ -375,9 +379,30 @@ export default class Page {
     }
 
     const safeArgs = args.map(a => this.serializeArgForEvaluate(a));
+
+    const runAsString = async () => {
+      if (typeof fnOrString !== 'function') {
+        return await target.evaluate(String(fnOrString));
+      }
+
+      // Build a self-contained script so no function object needs to cross the transport boundary.
+      const fnSource = fnOrString.toString();
+      const argsJson = JSON.stringify(safeArgs);
+      const script = `(() => { const __fn = (${fnSource}); const __args = ${argsJson}; return __fn(...__args); })()`;
+      return await target.evaluate(script);
+    };
+
     try {
-      return await target.evaluate(fnOrString, ...safeArgs);
+      if (typeof fnOrString === 'function') {
+        return await target.evaluate(fnOrString, ...safeArgs);
+      }
+      return await target.evaluate(String(fnOrString));
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('cannot be serialized') || message.includes('Passed function cannot be serialized')) {
+        logger.warning('safeEvaluate fallback: executing serialized script string');
+        return await runAsString();
+      }
       logger.warning('safeEvaluate failed:', err);
       throw err;
     }
