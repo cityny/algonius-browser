@@ -468,7 +468,7 @@ window.buildDomTree = (
 
       // Check parent visibility
       const parentElement = textNode.parentElement;
-      if (!parentElement) return false;
+      if (!parentElement) return false; // Ensure parent element exists
 
       try {
         return (
@@ -1411,22 +1411,64 @@ window.buildDomTree = (
     }
   }
 
-  const result = debugMode ? { rootId, map: DOM_HASH_MAP, perfMetrics: PERF_METRICS } : { rootId, map: DOM_HASH_MAP };
+  // Sanitize the DOM_HASH_MAP to ensure only plain data (no functions, prototypes, DOM nodes)
+  function sanitizeNode(obj) {
+    if (obj === null) return null;
+    if (typeof obj !== 'object') return obj;
+
+    if (Array.isArray(obj)) {
+      return obj.map(item => sanitizeNode(item));
+    }
+
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      // Skip functions and symbols
+      if (typeof v === 'function' || typeof k === 'symbol') continue;
+
+      // Only include primitive values, arrays, or plain objects
+      if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+        out[k] = v;
+      } else if (Array.isArray(v)) {
+        out[k] = v.map(item => sanitizeNode(item));
+      } else if (typeof v === 'object') {
+        // For DOMRect-like objects, extract numeric props if present
+        if ('top' in v && 'left' in v && 'width' in v && 'height' in v) {
+          out[k] = {
+            top: Number(v.top) || 0,
+            left: Number(v.left) || 0,
+            width: Number(v.width) || 0,
+            height: Number(v.height) || 0,
+          };
+        } else {
+          out[k] = sanitizeNode(v);
+        }
+      }
+    }
+    return out;
+  }
+
+  const safeMap = {};
+  for (const [id, node] of Object.entries(DOM_HASH_MAP)) {
+    safeMap[id] = sanitizeNode(node);
+  }
+
+  const result = debugMode ? { rootId, map: safeMap, perfMetrics: PERF_METRICS } : { rootId, map: safeMap };
+
   try {
     return JSON.stringify(result);
   } catch (e) {
-    // Fallback: attempt to remove circular refs for stringification
-    const getCircularReplacer = () => {
-      const seen = new WeakSet();
-      return (_key, value) => {
-        if (typeof value === 'object' && value !== null) {
-          if (seen.has(value)) return '[Circular]';
-          seen.add(value);
-        }
-        return value;
-      };
-    };
     try {
+      // Fallback: attempt to remove circular refs for stringification
+      const getCircularReplacer = () => {
+        const seen = new WeakSet();
+        return (_key, value) => {
+          if (typeof value === 'object' && value !== null) {
+            if (seen.has(value)) return '[Circular]';
+            seen.add(value);
+          }
+          return value;
+        };
+      };
       return JSON.stringify(result, getCircularReplacer());
     } catch (err) {
       // As a last resort, return minimal info
