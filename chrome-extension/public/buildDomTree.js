@@ -1411,5 +1411,26 @@ window.buildDomTree = (
     }
   }
 
-  return debugMode ? { rootId, map: DOM_HASH_MAP, perfMetrics: PERF_METRICS } : { rootId, map: DOM_HASH_MAP };
+  const result = debugMode ? { rootId, map: DOM_HASH_MAP, perfMetrics: PERF_METRICS } : { rootId, map: DOM_HASH_MAP };
+  try {
+    return JSON.stringify(result);
+  } catch (e) {
+    // Fallback: attempt to remove circular refs for stringification
+    const getCircularReplacer = () => {
+      const seen = new WeakSet();
+      return (_key, value) => {
+        if (typeof value === 'object' && value !== null) {
+          if (seen.has(value)) return '[Circular]';
+          seen.add(value);
+        }
+        return value;
+      };
+    };
+    try {
+      return JSON.stringify(result, getCircularReplacer());
+    } catch (err) {
+      // As a last resort, return minimal info
+      return JSON.stringify({ rootId, mapSize: Object.keys(DOM_HASH_MAP).length });
+    }
+  }
 };

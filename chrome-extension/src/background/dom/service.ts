@@ -136,9 +136,32 @@ async function _buildDomTree(
   });
 
   // First cast to unknown, then to BuildDomTreeResult
-  const evalPage = results[0]?.result as unknown as BuildDomTreeResult;
+  const raw = results[0]?.result as unknown;
+
+  // If the result is a JSON string (serialization fallback), parse it
+  let evalPage: BuildDomTreeResult | null = null;
+  try {
+    if (typeof raw === 'string') {
+      evalPage = JSON.parse(raw) as BuildDomTreeResult;
+    } else {
+      evalPage = raw as BuildDomTreeResult;
+    }
+  } catch (err) {
+    // Provide more diagnostic info when parsing fails
+    const snippet =
+      typeof raw === 'string' ? `${raw.slice(0, 1024)}...` : JSON.stringify(raw, getCircularReplacer(), 2);
+    throw new Error(`Failed to parse DOM tree result: ${String(err)}. Raw snippet: ${snippet}`);
+  }
+
   if (!evalPage || !evalPage.map || !evalPage.rootId) {
-    throw new Error('Failed to build DOM tree: No result returned or invalid structure');
+    // If there's no result, include some debugging info from the raw result
+    const info = {
+      typeofResult: typeof raw,
+      resultKeys: raw && typeof raw === 'object' ? Object.keys(raw).slice(0, 10) : undefined,
+    };
+    throw new Error(
+      `Failed to build DOM tree: No result returned or invalid structure. Debug: ${JSON.stringify(info)}`,
+    );
   }
 
   // Log performance metrics in debug mode
@@ -147,6 +170,18 @@ async function _buildDomTree(
   }
 
   return _constructDomTree(evalPage);
+}
+
+// Helper to safely stringify objects that may contain circular refs for diagnostics
+function getCircularReplacer() {
+  const seen = new WeakSet();
+  return function (_key: string, value: any) {
+    if (typeof value === 'object' && value !== null) {
+      if (seen.has(value)) return '[Circular]';
+      seen.add(value);
+    }
+    return value;
+  };
 }
 
 /**
